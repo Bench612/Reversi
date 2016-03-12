@@ -124,8 +124,6 @@ public class Reversi {
 			currPlayer = nextPlayer;
 			System.out.flush();
 		} while (currPlayer != EMPTY);
-		printBoard(players[currPlayer + 1].getMoveRow(),
-				players[currPlayer + 1].getMoveCol(), currPlayer);
 		System.out.println("Game Over!");
 	}
 
