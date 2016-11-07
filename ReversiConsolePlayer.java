@@ -10,7 +10,7 @@ public class ReversiConsolePlayer implements ReversiPlayer {
 	int boardSize;
 	int moveRow, moveCol;
 
-	public ReversiConsolePlayer(int boardSize, boolean first) {
+	public ReversiConsolePlayer(int boardSize) {
 		this.boardSize = boardSize;
 	}
 

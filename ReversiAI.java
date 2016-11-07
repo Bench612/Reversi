@@ -1,16 +1,23 @@
 /*
  * Benjamin Chang
  * March 2016
+ * Updated July 2016
  */
 
 import java.util.ArrayList;
 import java.util.Collections;
+
+enum Difficulty {
+	Easy, Normal, Hard, Brutal,
+}
 
 public class ReversiAI implements ReversiPlayer {
 
 	final static int WIN = 2000000000;
 	final static int LOSE = -WIN;
 	final static int DRAW = WIN / 2;
+
+	int minimumSearchDepth = 4;
 
 	int minDepth = 1000;
 	int maxDepth = 0;
@@ -20,27 +27,31 @@ public class ReversiAI implements ReversiPlayer {
 	long numAtMoves[];
 	boolean outOfMemory; // based on depth not total moves
 	// variables to change the heuristic and stuff
-	int cutoff1; // when to switch to more basic heuristic
-	int cutoff2; // when to switch to most basic heuristic
-	int cutoff3; // when to start allocating more of the
-					// remaining time
+	int cutoff; // when to start allocating more of the
+				// remaining time
 	int nodesCreated;
 
-	int[] permShiftType;
-	int[] permShiftNotType;
 	int[] dirOffsets;
 	int[] queue;
-	// first numBoardSquares of pBaseBoardWeights is for player
-	int[] pBaseBoardWeights;
+	int[] baseBoardWeights; // board weights for regular pieces
+	int[] perimBoardWeights; // board weights for regular pieces
+	int[] permBoardWeights; // weight after it becomes perm
+	byte[] numNeighbors;
 	int boardSize;
 	int numBoardSquares;
+
+	byte[] rowColDiagCounts; // diag \, col, diag / , row
+	int[] rowColDiagCountIndicies; // sets of 4
 
 	SearchTree head;
 	long totalTime;
 	long turnTimeLimit;
 
-	public ReversiAI(int boardSize, long totalTime, long turnTimeLimit,
-			boolean first) {
+	int difficulty;
+	final static int EASY = 1, NORMAL = 2, HARD = 3, BRUTAL = 4, BRUTALER = 5;
+
+	public ReversiAI(int boardSize, int difficulty, long totalTime,
+			long turnTimeLimit, boolean first) {
 		this.totalTime = totalTime;
 		this.turnTimeLimit = turnTimeLimit;
 		initTime = new long[boardSize * boardSize + 2];
@@ -49,30 +60,48 @@ public class ReversiAI implements ReversiPlayer {
 		int boardDim = boardSize + 2;
 		dirOffsets = new int[] { -boardDim - 1, -boardDim, -boardDim + 1, -1,
 				boardDim - 1, boardDim + 1, boardDim, 1 };
+
+		this.difficulty = difficulty;
 		initHeuristics(boardSize);
+
 		head = new SearchTree(boardSize, first);
+		head.undoCountChanges();
+
+		switch (difficulty) {
+		case BRUTALER:
+			minimumSearchDepth = 4;
+			break;
+		case BRUTAL:
+			if (boardSize <= 12) {
+				minimumSearchDepth = 4;
+				break;
+			}
+		case HARD:
+			minimumSearchDepth = 2;
+			break;
+		case NORMAL:
+			minimumSearchDepth = 2;
+		case EASY:
+			minimumSearchDepth = 1;
+			break;
+		default:
+			break;
+		}
 	}
 
-	// helper function for initHeuristics
-	private void setCornerSides(int[] toSet, int val) {
-		int boardDim = boardSize + 2;
-		toSet[2 + boardDim] = val;
-		toSet[2 * boardDim + 1] = val;
-		toSet[boardDim + boardSize - 1] = val;
-		toSet[2 * boardDim + boardSize] = val;
-		toSet[(boardSize - 1) * boardDim + 1] = val;
-		toSet[boardSize * boardDim + 2] = val;
-		toSet[(boardSize - 1) * boardDim + boardSize] = val;
-		toSet[(boardSize) * boardDim + boardSize - 1] = val;
+	// used as a helper for initHeuristics, max is inclusive
+	private int flips(int pos, int max) {
+		int left = Math.max(pos - 1, 0); // things between left most and the pos
+		int right = Math.max(max - pos - 1, 0); // things between right most and
+												// the pos
+		return choose2(left) + choose2(right);
 	}
 
-	// helper function for initHeuristics
-	private void setCorners(int[] toSet, int value) {
-		int boardDim = boardSize + 2;
-		toSet[boardDim + 1] = value;
-		toSet[boardDim + boardSize] = value;
-		toSet[1 + boardSize * boardDim] = value;
-		toSet[boardDim * boardDim - boardDim - 2] = value;
+	// used as a helper for initHeuristics, max inclusive
+	private int flippedBy(int pos, int max) {
+		int left = pos;
+		int right = max - pos;
+		return left * right;
 	}
 
 	private void initHeuristics(int boardSize) {
@@ -80,74 +109,154 @@ public class ReversiAI implements ReversiPlayer {
 		int boardDim = boardSize + 2;
 		int numSquares = boardSize * boardSize;
 		numBoardSquares = boardDim * boardDim;
-		// compute full heuristic for first 70p
-		cutoff1 = numSquares * 70 / 100;
-		// maximize efficiency for last squares
-		cutoff2 = numSquares * 85 / 100;
+
 		// maximize depth and time for final squares
-		cutoff3 = numSquares - 20;
-		permShiftType = new int[numBoardSquares];
-		permShiftNotType = new int[numBoardSquares];
-		pBaseBoardWeights = new int[numBoardSquares * 2];
+		cutoff = numSquares - 23;
+
+		permBoardWeights = new int[numBoardSquares];
+		baseBoardWeights = new int[numBoardSquares];
+		perimBoardWeights = new int[numBoardSquares];
+		numNeighbors = new byte[numBoardSquares];
 		queue = new int[numSquares * 9 + 1];
-		// set corners
-		int cornerVal = numSquares * numSquares / 3;
-		int cornerSideVal = -cornerVal / 2;
-		setCorners(pBaseBoardWeights, cornerVal);
-		setCornerSides(pBaseBoardWeights, cornerSideVal);
-		// set the sides
-		int sideVal = (boardSize - 1) * (boardSize - 1) * numSquares
-				/ (4 * (boardSize + 2));
-		for (int i = 2; i < boardSize - 2; i++) {
-			pBaseBoardWeights[i + 1 + boardDim] = sideVal;
-			pBaseBoardWeights[boardSize * boardDim + i + 1] = sideVal;
-			pBaseBoardWeights[(i + 1) * boardDim + 1] = sideVal;
-			pBaseBoardWeights[(i + 1) * boardDim + boardSize] = sideVal;
-		}
 
-		int outside = boardSize * 4 - 4;
-		for (int i = 1; i < boardSize / 2; i++) {
-			int inside = ((boardSize - (i * 2)) * 4 - 4);
-			int val = (numSquares - outside - inside) * numSquares / outside;
-			for (int j = i; j < boardSize - i; j++) {
-				pBaseBoardWeights[(i + 1) * boardDim + j + 1] = val; // top
-				pBaseBoardWeights[(boardSize - i) * boardDim + j + 1] = val; // bottom
-				pBaseBoardWeights[(j + 1) * boardDim + (i + 1)] = val; // left
-				pBaseBoardWeights[(j + 1) * boardDim + (boardSize - i)] = val; // right
+		// set the counts
+		rowColDiagCounts = new byte[2 * (boardSize + boardSize + boardSize - 1)];
+		rowColDiagCountIndicies = new int[numBoardSquares * 4];
+		for (int i = 0; i < boardSize; i++)
+			for (int j = 0; j < boardSize; j++) {
+				int pos4 = ((i + 1) * boardDim + (j + 1)) << 2;
+				rowColDiagCountIndicies[pos4] = (((boardSize - 1) - j) + i); // \diag
+				rowColDiagCountIndicies[pos4 + 1] = ((boardSize * 2 - 1) + j); // |
+																				// col
+				rowColDiagCountIndicies[pos4 + 2] = ((boardSize * 2 - 1 + boardSize)
+						+ i + j);// diag /*/
+				rowColDiagCountIndicies[pos4 + 3] = (((boardSize * 2 - 1) * 2 + boardSize) + i);// -
+																								// row
 			}
-			pBaseBoardWeights[(i + 1) * boardDim + i + 1] = 2 * val;
-			pBaseBoardWeights[(i + 1) * boardDim + boardDim - i] = 2 * val;
-			pBaseBoardWeights[(boardSize - i) * boardDim + i + 1] = 2 * val;
-			pBaseBoardWeights[(boardSize - i) * boardDim + boardSize - i] = 2 * val;
-			outside += inside;
+
+		// initialize the maximum for the counts
+		for (int i = 0; i < boardSize; i++) {
+			rowColDiagCounts[(boardSize * 2 - 1) + i] = (byte) boardSize;
+			rowColDiagCounts[((boardSize * 2 - 1) * 2 + boardSize) + i] = (byte) (boardSize);
+		}
+		for (int i = 0; i < boardSize; i++) {
+			rowColDiagCounts[i] = (byte) (i + 1);
+			rowColDiagCounts[boardSize * 2 - 2 - i] = (byte) (i + 1);
+			rowColDiagCounts[boardSize * 3 - 1 + i] = (byte) (i + 1);
+			rowColDiagCounts[boardSize * 5 - 3 - i] = (byte) (i + 1);
 		}
 
-		for (int i = 0; i < numBoardSquares; i++) {
-			pBaseBoardWeights[numBoardSquares + i] = pBaseBoardWeights[i];
-			pBaseBoardWeights[i] *= -1;
-		}
+		// include the counts for the initial pieces
+		for (int i = boardSize / 2 - 1; i <= boardSize / 2; i++)
+			for (int j = boardSize / 2 - 1; j <= boardSize / 2; j++) {
+				int pos4 = ((i + 1) * boardDim + j + 1) << 2;
+				for (int k = 0; k < 4; k++)
+					rowColDiagCounts[rowColDiagCountIndicies[pos4 + k]]--;
+			}
 
-		for (byte i = 0; i < boardSize / 2; i++) {
-			int scale = boardSize / 2 - i;
-			for (int j = i; j < boardSize - i; j++) {
-				int valShift = -scale * 3
-						* pBaseBoardWeights[(i + 1) * boardDim + j + 1] / 2;
-				permShiftType[(i + 1) * boardDim + j + 1] = valShift; // top
-				permShiftType[(boardSize - i) * boardDim + j + 1] = valShift; // bottom
-				permShiftType[(j + 1) * boardDim + (i + 1)] = valShift; // left
-				permShiftType[(j + 1) * boardDim + (boardSize - i)] = valShift; // right
-				int valNotShift = (scale - 1)
-						* pBaseBoardWeights[(i + 1) * boardDim + j + 1]
-						/ (scale);
-				permShiftNotType[(i + 1) * boardDim + j + 1] = valNotShift; // top
-				permShiftNotType[(boardSize - i) * boardDim + j + 1] = valNotShift; // bottom
-				permShiftNotType[(j + 1) * boardDim + (i + 1)] = valNotShift; // left
-				permShiftNotType[(j + 1) * boardDim + (boardSize - i)] = valNotShift; // right
+		// calculate the board weights as num things it can flip + 1 / things
+		// that flip it +1
+		for (int i = 0; i < boardSize; i++)
+			for (int j = 0; j < boardSize; j++) {
+				int pos = (i + 1) * boardDim + (j + 1);
+				int canFlip = flips(i, boardSize - 1)
+						+ flips(j, boardSize - 1)
+						+ flips(Math.min(j, boardSize - 1 - i), boardSize - 1
+								- Math.abs(i + j - (boardSize - 1)))
+						+ flips(Math.min(boardSize - 1 - j, boardSize - 1 - i),
+								boardSize - 1 - Math.abs(-j + i));
+
+				int canBeFlippedBy = flippedBy(i, boardSize - 1)
+						+ flippedBy(j, boardSize - 1)
+						+ flippedBy(Math.min(j, boardSize - 1 - i), boardSize
+								- 1 - Math.abs(i + j - (boardSize - 1)))
+						+ flippedBy(
+								Math.min(boardSize - 1 - j, boardSize - 1 - i),
+								boardSize - 1 - Math.abs(-j + i));
+				// baseBoardWeights will be normalized, others not
+				switch (difficulty) {
+				case BRUTALER:
+					baseBoardWeights[pos] = canFlip - canBeFlippedBy;
+					perimBoardWeights[pos] = (3 * canFlip) - canBeFlippedBy;
+					permBoardWeights[pos] = 3 * canFlip;
+					break;
+				case BRUTAL:
+					baseBoardWeights[pos] = canFlip - canBeFlippedBy;
+					perimBoardWeights[pos] = (3 * canFlip) - canBeFlippedBy;
+					permBoardWeights[pos] = 3 * canFlip;
+					break;
+				case HARD:
+					// baseBoardWeights[pos] = canFlip - canBeFlippedBy + 1;
+					perimBoardWeights[pos] = (canFlip - canBeFlippedBy + 1);
+					permBoardWeights[pos] = (canFlip + 1);
+					break;
+				case NORMAL:
+					baseBoardWeights[pos] = canFlip - canBeFlippedBy + 1;
+					permBoardWeights[pos] = (canFlip + 1);
+					break;
+				case EASY:
+					baseBoardWeights[pos] = canFlip - canBeFlippedBy + 1;
+					break;
+				default:
+					break;
+				}
+			}
+
+		// record the numNeighbors
+		for (int i = 0; i < boardSize; i++) {
+			for (int j = 0; j < boardSize; j++) {
+				int pos = (i + 1) * boardDim + (j + 1);
+				if (i == 0 || j == 0 || i == boardSize - 1
+						|| j == boardSize - 1) {
+					if ((i == 0 || i == boardSize - 1)
+							&& (j == 0 || j == boardSize - 1))
+						numNeighbors[pos] = 3;
+					else
+						numNeighbors[pos] = 5;
+				} else
+					numNeighbors[pos] = 8;
 			}
 		}
-		setCornerSides(permShiftType, -3 * cornerSideVal / 2);
-		setCornerSides(permShiftNotType, (boardSize / 3 - 1) * cornerSideVal
-				/ (boardSize / 3));
+
+		// account for the allowing the opponent to place a piece
+
+		final int cornerOG = baseBoardWeights[boardDim + 1];
+
+		int[] boardWeightsNew = baseBoardWeights.clone();
+		final int maxIterations = difficulty >= BRUTAL ? 4 : 4;
+		for (int iterations = 0; iterations < maxIterations; iterations++) {
+			for (int i = 0; i < boardSize; i++) {
+				for (int j = 0; j < boardSize; j++) {
+					int pos = (i + 1) * boardDim + (j + 1);
+					for (int k = 0; k < 8; k++) {
+						boardWeightsNew[pos + dirOffsets[k]] -= baseBoardWeights[pos]
+								/ (numNeighbors[pos]);
+					}
+				}
+			}
+			for (int i = 0; i < numBoardSquares; i++)
+				baseBoardWeights[i] = boardWeightsNew[i];
+		}
+
+		// rescale everything
+		final int cornerNew = baseBoardWeights[boardDim + 1];
+		for (int i = 0; i < numBoardSquares; i++)
+			if (baseBoardWeights[i] != 0)
+				baseBoardWeights[i] = baseBoardWeights[i] + cornerOG
+						- cornerNew;
+
+		for (int i = 0; i < boardSize; i++) {
+			for (int j = 0; j < boardSize; j++) {
+				int pos = (i + 1) * boardDim + (j + 1);
+				System.out.print(baseBoardWeights[pos] + " ");
+			}
+			System.out.println();
+		}
+		System.out.println();
+	}
+
+	private static int choose2(int x) {
+		return (x) * (x + 1) / 2;
 	}
 
 	@Override
@@ -157,13 +266,34 @@ public class ReversiAI implements ReversiPlayer {
 		minDepth = 1000;
 		maxDepth = 0;
 		outOfMemory = false;
+		long start = System.currentTimeMillis();
 		long duration = Math.min(
-				head.totalMoves >= cutoff3 ? totalTime * 40 / 100 : totalTime
+				head.totalMoves >= cutoff ? totalTime * 40 / 100 : totalTime
 						/ ((boardSize * boardSize) - head.totalMoves),
 				turnTimeLimit);
 		System.out.println("\nTime remaining: " + totalTime / 1000 + "s"
 				+ ", Turn time: " + duration + "ms\nAI thinking...");
-		head = head.makeMove(head.performSearch(duration));
+		SearchTree nextHead = head.performSearch(duration);
+		if (difficulty >= BRUTAL) {
+			SearchTree oldNextHead = null;
+			int oldNodesCreated = 0;
+			while (System.currentTimeMillis() - start < duration
+					&& nextHead != oldNextHead
+					&& nodesCreated != oldNodesCreated) {
+				if (oldNextHead != null)
+					System.out.println("Expanded Search - "
+							+ (nodesCreated - oldNodesCreated) + " nodes.");
+				oldNodesCreated = nodesCreated;
+				head.applyCountChanges();
+				nextHead.performSearch(duration
+						- (System.currentTimeMillis() - start));
+				head.undoCountChanges();
+				oldNextHead = nextHead;
+				nextHead = head.performSearch(0);
+			}
+		}
+
+		head = head.makeMove(nextHead.move);
 		// find the best heuristic
 		long timeSpent = System.currentTimeMillis() - startTime;
 		System.out.println("Move: "
@@ -191,6 +321,7 @@ public class ReversiAI implements ReversiPlayer {
 	}
 
 	private class SearchTree implements Comparable<SearchTree> {
+		// used for board
 		final static byte PERIMETER = 2;
 		final static byte OUT = 4;
 		final static byte ENEMY = -1;
@@ -204,40 +335,41 @@ public class ReversiAI implements ReversiPlayer {
 		final int totalMoves;
 
 		// set before initialization
-		private int rawHeuristicDiff;
-		int heuristic; // value is > 0 if AI is winning < 0 o.w
+		private int heuristic; // value is > 0 if AI is winning < 0 o.w
+		private int pieceHeuristic; // heuristic for just the pieces on the
+									// board;
 		// removed after initialization
 		byte[] board;
-		private ArrayList<Integer> parentPerimeter;
+		private ArrayList<Integer> perimeter;
 		private byte[] boardStruct;
-		private byte[] perimCounts; // first 4 bytes represent the player
 		// set after initialization
-		private final int mask4 = 0b1111;
 		private boolean initialized;
 		private ArrayList<SearchTree> movesSearch;
 
+		// used for boardstruct
 		final static byte normal = 0;
 		final static byte permPerim = 1;
 		final static byte perm = 2;
+		final static byte out = 3;
 
 		SearchTree(int boardSize, boolean aiFirst) {
 			boardStruct = new byte[numBoardSquares];
-			perimCounts = new byte[numBoardSquares];
 
 			int boardDim = boardSize + 2;
 
 			// set the perm squares
+			// set the outside
 			for (int i = 0; i < boardDim; i++) {
-				boardStruct[(boardDim - 1) * boardDim + i] = -1;
-				boardStruct[i] = -1;
-				boardStruct[i * boardDim] = -1;
-				boardStruct[i * boardDim + boardDim - 1] = -1;
+				boardStruct[(boardDim - 1) * boardDim + i] = out;
+				boardStruct[i] = out;
+				boardStruct[i * boardDim] = out;
+				boardStruct[i * boardDim + boardDim - 1] = out;
 			}
 			// set corners
-			boardStruct[boardDim + 1] = 5;
-			boardStruct[boardDim + boardSize] = 5;
-			boardStruct[1 + boardSize * boardDim] = 5;
-			boardStruct[numBoardSquares - boardDim - 2] = 5;
+			boardStruct[boardDim + 1] = permPerim;
+			boardStruct[boardDim + boardSize] = permPerim;
+			boardStruct[1 + boardSize * boardDim] = permPerim;
+			boardStruct[numBoardSquares - boardDim - 2] = permPerim;
 
 			// hardcode the initial board
 			board = new byte[numBoardSquares];
@@ -254,14 +386,14 @@ public class ReversiAI implements ReversiPlayer {
 			board[(boardSize / 2 + 1) * boardDim + boardSize / 2 + 1] = type;
 			board[(boardSize / 2 + 1) * boardDim + boardSize / 2] = (byte) -type;
 			totalMoves = 4;
-			move = -1;
+			move = (boardSize / 2) * boardDim + boardSize / 2;
 
-			rawHeuristicDiff = 0;
-			heuristic = rawHeuristicDiff;
+			heuristic = 0;
+			pieceHeuristic = 0;
 
 			// find the perimeter and moves
 			movesSearch = new ArrayList<SearchTree>(4);
-			ArrayList<Integer> perimeter = new ArrayList<Integer>(12);
+			perimeter = new ArrayList<Integer>(12);
 			for (int rO = -1; rO <= 2; rO++)
 				for (int cO = -1; cO <= 2; cO++) {
 					int pos = (boardSize / 2 + rO) * boardDim + boardSize / 2
@@ -269,35 +401,52 @@ public class ReversiAI implements ReversiPlayer {
 					if (board[pos] == EMPTY) {
 						board[pos] = PERIMETER;
 						perimeter.add(pos);
-						if (verifyPossibleMove(pos, (byte) -type))
-							movesSearch.add(new SearchTree(this, perimeter,
-									(byte) -type, pos));
 					}
 				}
+			for (Integer p : perimeter)
+				if (verifyPossibleMove(p, (byte) -type))
+					movesSearch.add(new SearchTree(this, (byte) -type, p));
+
 			initialized = true;
 		}
 
-		private SearchTree(SearchTree parent,
-				ArrayList<Integer> parentPerimeter, byte t, int move) {
+		public void applyCountChanges() {
+			int pos4 = move << 2;
+			for (int i = 0; i < 4; i++)
+				rowColDiagCounts[rowColDiagCountIndicies[pos4 + i]]--;
+		}
+
+		public void undoCountChanges() {
+			int pos4 = move << 2;
+			for (int i = 0; i < 4; i++)
+				rowColDiagCounts[rowColDiagCountIndicies[pos4 + i]]++;
+		}
+
+		private SearchTree(SearchTree parent, byte t, int move) {
 			this.move = move;
 			this.parentType = parent.type;
 			this.totalMoves = parent.totalMoves + 1;
-			this.parentPerimeter = parentPerimeter;
 			this.boardStruct = parent.boardStruct;
-			this.perimCounts = parent.perimCounts;
 			board = parent.board.clone();
 			type = t;
 			initialized = false;
 
+			// queue everything that is on the permPerim or newly on permPerim
+			// or neighborChanged to Perm
+			int queueTail = 0;
+			applyCountChanges();
+
+			if (boardStruct[move] == permPerim
+					|| ((rowColDiagCounts[rowColDiagCountIndicies[move << 2]]
+							| rowColDiagCounts[rowColDiagCountIndicies[(move << 2) + 1]]
+							| rowColDiagCounts[rowColDiagCountIndicies[(move << 2) + 2]] | rowColDiagCounts[rowColDiagCountIndicies[(move << 2) + 3]]) == 0)) {
+				boardStruct[move] = permPerim;
+				queue[queueTail] = move;
+				queueTail = 1;
+			}
+
 			board[move] = t;
-			final int iType = (type + 1) / 2;
-			final int iNotType = (1 - type) / 2;
-			final int pMoveType = iType * numBoardSquares + move;
-			final int pMoveNotType = iNotType * numBoardSquares + move;
-			int rawDiff = pBaseBoardWeights[pMoveType]
-					+ (permShiftType[move] * ((parent.perimCounts[move] >> iType) & mask4))
-					- pBaseBoardWeights[pMoveNotType]
-					- (permShiftNotType[move] * ((parent.perimCounts[move] >> iNotType) & mask4));
+			int rawDiff = baseBoardWeights[move] * type;
 			// flip everything
 			for (int i = 0; i < 8; i++) {
 				int amount = 1;
@@ -307,101 +456,130 @@ public class ReversiAI implements ReversiPlayer {
 					for (amount--; amount > 0; amount--) {
 						int pos = dirOffsets[i] * amount + move;
 						board[pos] = type;
-						rawDiff += 2 * (pBaseBoardWeights[pMoveType]
-								+ (permShiftType[pos] * ((parent.perimCounts[pos] >> iType) & mask4))
-								- pBaseBoardWeights[pMoveNotType] - (permShiftNotType[pos] * ((parent.perimCounts[move] >> iNotType) & mask4)));
+						rawDiff += 2 * baseBoardWeights[pos] * type;
+						if (boardStruct[pos] == permPerim
+								|| ((rowColDiagCounts[rowColDiagCountIndicies[pos << 2]]
+										| rowColDiagCounts[rowColDiagCountIndicies[(pos << 2) + 1]]
+										| rowColDiagCounts[rowColDiagCountIndicies[(pos << 2) + 2]] | rowColDiagCounts[rowColDiagCountIndicies[(pos << 2) + 3]]) == 0)) {
+							queue[queueTail] = pos;
+							queueTail++;
+						}
 					}
 				}
 			}
-			rawHeuristicDiff = rawDiff + parent.rawHeuristicDiff;
-			heuristic = rawHeuristicDiff;
+
+			// calculate the structure changes if anything is queued
+			if (queueTail > 0) {
+				// make a copy of the old boardStruct
+				boardStruct = boardStruct.clone();
+				// queue new permanent pieces
+				for (int k = 0; k < queueTail; k++) {
+					final int pos = queue[k];
+					// if the new pos is perm and wasn't already
+					if (boardStruct[pos] == permPerim && isPerm(pos)) {
+						boardStruct[pos] = perm;
+						rawDiff += (permBoardWeights[pos] - baseBoardWeights[pos])
+								* board[pos];
+						for (int i = 0; i < 8; i++) {
+							int posShift = pos + dirOffsets[i];
+							// if its normal or a permPerim
+							if (boardStruct[posShift] < perm) {
+								boardStruct[posShift] = permPerim;
+								// if its not empty, add it to queue
+								if (board[posShift] % 2 != 0) {
+									queue[queueTail] = posShift;
+									queueTail++;
+								}
+							}
+						}
+					}
+				}
+			}
+			pieceHeuristic = rawDiff + parent.pieceHeuristic;
+
+			perimeter = new ArrayList<Integer>(parent.perimeter.size() + 7);
+			for (Integer i : parent.perimeter)
+				if (i != move)
+					perimeter.add(i);
+			for (int i = 0; i < 8; i++) {
+				int pos = move + dirOffsets[i];
+				if (board[pos] == EMPTY) {
+					board[pos] = PERIMETER;
+					perimeter.add(pos);
+				}
+			}
+			// compute the mobility heuristic
+			int mobilityHeuristic = 0;
+			for (Integer perim : perimeter) {
+				int total = 0;
+				int diff = 0;
+				if (boardStruct[perim] == permPerim) {
+					for (int i = 0; i < 8; i++) {
+						int pos = perim + dirOffsets[i];
+						if (boardStruct[pos] == perm) {
+							diff -= board[pos] % 2;
+							total += 2;
+						} else {
+							diff += board[pos] % 2;
+							total += board[pos] & 1;
+						}
+					}
+
+				} else {
+					for (int i = 0; i < 8; i++) {
+						int pos = perim + dirOffsets[i];
+						diff += board[pos] % 2;
+						total += board[pos] & 1;
+					}
+				}
+				mobilityHeuristic -= (perimBoardWeights[perim] * diff)
+						/ Math.max(total, 3);
+			}
+
+			heuristic = pieceHeuristic + mobilityHeuristic;
+			undoCountChanges();
 		}
 
 		// creates the searched moves and updates the structure
 		private boolean initialize() {
 			long startTime = System.currentTimeMillis();
 			try {
-				// calculate the structure changes
-				if (totalMoves < cutoff2 && boardStruct[move] == permPerim
-						&& isNewPerm(move)) {
-					// make copies
-					byte[] newBoardStruct = boardStruct.clone();
-					byte[] newPerimCounts = perimCounts.clone();
-					newBoardStruct[move] = perm;
-					queue[0] = -move;
-					int queueTail = 1;
-					for (int k = 0; k < queueTail; k++) {
-						final int posS = queue[k];
-						if (posS < 0) {
-							for (int i = 0; i < 8; i++) {
-								int posShift = -posS + dirOffsets[i];
-								if (newBoardStruct[posShift] == normal
-										|| ((totalMoves < cutoff1) && newBoardStruct[posShift] >= 0)) {
-									newBoardStruct[posShift] = permPerim;
-									newPerimCounts[posShift] += 0b10000 >> ((board[-posS] + 1) / 2) * 4;
-									queue[queueTail] = posShift;
-									queueTail++;
-								}
-							}
-						} else {
-							if (board[posS] % 2 != 0 && isNewPerm(posS)) {
-								newBoardStruct[posS] = perm;
-								queue[queueTail] = -posS;
-								queueTail++;
-							}
-						}
-					}
-					boardStruct = newBoardStruct;
-					perimCounts = newPerimCounts;
-				}
-
 				// calculate the possible moves
-				// update perimeter
-				ArrayList<Integer> perimeter = new ArrayList<Integer>(
-						parentPerimeter.size() + 7);
-				for (Integer i : parentPerimeter)
-					if (i != move)
-						perimeter.add(i);
-				for (int i = 0; i < 8; i++) {
-					int pos = move + dirOffsets[i];
-					if (board[pos] == EMPTY) {
-						board[pos] = PERIMETER;
-						perimeter.add(pos);
-					}
-				}
 				ArrayList<SearchTree> newMovesSearch = new ArrayList<SearchTree>(
-						perimeter.size() * 3 / 4);
+						perimeter.size());
+				applyCountChanges();
 				// check everything on the perimeter
 				for (Integer i : perimeter)
 					if (verifyPossibleMove(i, (byte) -type))
-						newMovesSearch.add(new SearchTree(this, perimeter,
-								(byte) -type, i));
+						newMovesSearch
+								.add(new SearchTree(this, (byte) -type, i));
 				// if no moves for next player
 				if (newMovesSearch.size() == 0) {
 					for (Integer i : perimeter)
 						if (verifyPossibleMove(i, type))
-							newMovesSearch.add(new SearchTree(this, perimeter,
-									type, i));
+							newMovesSearch.add(new SearchTree(this, type, i));
 					if (newMovesSearch.size() == 0) {
 						// then game is over, do a raw count and find the winner
 						int diff = 0;
 						for (int i = 0; i < board.length; i++)
 							diff += board[i] % 2;
-						heuristic = diff == 0 ? DRAW : (diff > 0 ? WIN : LOSE);
+						heuristic = diff
+								+ (diff == 0 ? DRAW : (diff > 0 ? WIN : LOSE));
 					}
 				}
-				// Hurray no out of memory error!
+				undoCountChanges();
+				// Hurray no out of memory error! Free all your stuff now
 				board = null;
-				parentPerimeter = null;
+				perimeter = null;
 				boardStruct = null;
-				perimCounts = null;
 				movesSearch = newMovesSearch;
 				nodesCreated += movesSearch.size();
-				initialized = true;
-				// average over 3
+
+				// used for checking if init has enough time to be called
 				numMoves[totalMoves] += movesSearch.size();
-				initTime[totalMoves] = System.currentTimeMillis() - startTime;
+				initTime[totalMoves] += (System.currentTimeMillis() - startTime);
 				numAtMoves[totalMoves]++;
+				initialized = true;
 				return true;
 			} catch (java.lang.OutOfMemoryError e) {
 				System.out.println("Out of memory! Returning best answer");
@@ -410,18 +588,53 @@ public class ReversiAI implements ReversiPlayer {
 			}
 		}
 
-		private boolean isNewPerm(int pos) {
+		public void printBoardStruct() {
+			System.out.println();
+			for (int i = 0; i < boardSize; i++) {
+				for (int j = 0; j < boardSize; j++) {
+					int pos = (i + 1) * (boardSize + 2) + (j + 1);
+					System.out.print(boardStruct[pos] + " ");
+				}
+				System.out.println();
+			}
+
+			this.applyCountChanges();
+			for (int i = 0; i < boardSize; i++) {
+				for (int j = 0; j < boardSize; j++) {
+					int pos = (i + 1) * (boardSize + 2) + (j + 1);
+					for (int k = 0; k < 4; k++)
+						System.out
+								.print(rowColDiagCounts[rowColDiagCountIndicies[(pos << 2)
+										+ k]]
+										+ ",");
+					System.out.print(" ");
+				}
+				System.out.println();
+			}
+
+			/*
+			 * for (int i = 0; i < newPerms.size(); i++) {
+			 * System.out.println(Reversi.moveToString(newPerms.get(i) /
+			 * (boardSize + 2) - 1, newPerms.get(i) % (boardSize + 2) - 1)); }
+			 */
+			this.undoCountChanges();
+			System.out.println();
+		}
+
+		private boolean isPerm(int pos) {
 			for (int i = 0; i < 4; i++) {
 				final int p1 = pos + dirOffsets[i];
 				final int p2 = pos - dirOffsets[i];
-				final boolean notP1FixType = boardStruct[p1] >= 0
-						|| (board[p1] != type && board[p1] != OUT);
-				final boolean notP2FixType = boardStruct[p2] >= 0
-						|| (board[p2] != type && board[p2] != OUT);
-				if (notP1FixType
-						&& notP2FixType
-						&& (boardStruct[p1] >= 0 || board[p1] != -type || boardStruct[p2] >= 0
-								&& board[p2] != -type))
+				// if one is out, the lane is full, or one is perm and the same
+				// type, or both perm
+				if (rowColDiagCounts[rowColDiagCountIndicies[(pos << 2) + i]] == 0
+						|| boardStruct[p1] == out
+						|| boardStruct[p2] == out
+						|| (boardStruct[p1] == perm && boardStruct[p2] == perm)
+						|| (boardStruct[p1] == perm && board[p1] == board[pos])
+						|| (boardStruct[p2] == perm && board[p2] == board[pos]))
+					continue;
+				else
 					return false;
 			}
 			return true;
@@ -438,24 +651,28 @@ public class ReversiAI implements ReversiPlayer {
 			return false;
 		}
 
-		//returns -1 indicating an error
-		int performSearch(long duration) {
+		// returns null indicating an error
+		SearchTree performSearch(long duration) {
 			long startTime = System.currentTimeMillis();
-			heuristic = performSearch(WIN, startTime + duration, 0);
+			int maxBest = WIN + boardSize * boardSize;
+			heuristic = performSearch(maxBest, -maxBest, startTime + duration,
+					0);
 			// find the best heuristic
 			for (int i = 0; i < movesSearch.size(); i++)
 				if (movesSearch.get(i).heuristic >= heuristic)
-					return movesSearch.get(i).move;
-			return -1;
+					return movesSearch.get(i);
+			return null;
 		}
 
 		// depth is the current depth
-		private int performSearch(int parentCurrentBest, long endTime, int depth) {
+		private int performSearch(int minBest, int maxBest, long endTime,
+				int depth) {
 			// if its not initialized, try to initialize if there is enough time
 			if (!initialized) {
 				final boolean shouldInitialize = !initialized
 						&& !outOfMemory
-						&& (depth % 2 == 1 || (endTime
+						&& (type == AI || depth < minimumSearchDepth
+								|| type == parentType || (endTime
 								- System.currentTimeMillis() > initTime[totalMoves]
 								/ Math.max(numAtMoves[totalMoves], 1)
 								+ initTime[totalMoves + 1]
@@ -474,31 +691,57 @@ public class ReversiAI implements ReversiPlayer {
 				return heuristic;
 			}
 			Collections.sort(movesSearch);
-			final boolean sameTypeAsParent = parentType == type;
 			// give each branch equal amount of the remaining time
 			final int childType = movesSearch.get(0).type;
-			int currentBest = LOSE * childType;
-			for (int i = 0; i < movesSearch.size(); i++) {
-				long currentTime = System.currentTimeMillis();
-				int h = movesSearch.get(i).performSearch(
-						sameTypeAsParent ? parentCurrentBest : currentBest,
-						currentTime + (endTime - currentTime)
-								/ (movesSearch.size() - i), depth + 1);
-				if (h * childType > currentBest * childType) {
-					// alpha/beta pruning
-					if (h * childType >= parentCurrentBest * childType) {
-						heuristic = h;
-						return heuristic;
+			int currentBest = (LOSE - boardSize * boardSize + 1) * childType;
+			applyCountChanges();
+			long minTimePerMove = (endTime - System.currentTimeMillis())
+					/ movesSearch.size();
+			if (childType == AI) { // maxmimize
+				for (int i = 0; i < movesSearch.size(); i++) {
+					long currentTime = System.currentTimeMillis();
+					int h = movesSearch.get(i).performSearch(
+							minBest,
+							maxBest,
+							currentTime
+									+ Math.max((endTime - currentTime) / 3,
+											minTimePerMove), depth + 1);
+					if (h > currentBest) {
+						currentBest = h;
+						// alpha/beta pruning
+						if (h > maxBest) {
+							maxBest = h;
+							if (maxBest >= minBest)
+								break;
+						}
 					}
-					currentBest = h;
+				}
+			} else { // minimize
+				for (int i = 0; i < movesSearch.size(); i++) {
+					long currentTime = System.currentTimeMillis();
+					int h = movesSearch.get(i).performSearch(minBest, maxBest,
+							currentTime + minTimePerMove, depth + 1);
+					if (h < currentBest) {
+						currentBest = h;
+						// alpha/beta pruning
+						if (h < minBest) {
+							minBest = h;
+							if (maxBest >= minBest)
+								break;
+						}
+					}
 				}
 			}
+			undoCountChanges();
 			heuristic = currentBest;
 			return heuristic;
 		}
 
 		// applies a move by returning the new head
 		SearchTree makeMove(int move) {
+			applyCountChanges();
+			if (!initialized)
+				initialize();
 			SearchTree newHead = movesSearch.get(0);
 			for (int i = 0; i < movesSearch.size(); i++)
 				if (movesSearch.get(i).move == move) {
@@ -507,6 +750,7 @@ public class ReversiAI implements ReversiPlayer {
 				}
 			if (!newHead.initialized)
 				newHead.initialize();
+			System.gc();
 			return newHead;
 		}
 
