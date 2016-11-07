@@ -73,4 +73,9 @@ public class ReversiConsolePlayer implements ReversiPlayer {
 	public void enemyPlayMove(int moveR, int moveC) {
 	}
 
+	@Override
+	public void quitGame() {
+		//TODO: no way to cancel System.in.read
+	}
+
 }

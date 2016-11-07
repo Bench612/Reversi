@@ -21,67 +21,11 @@ public class Reversi implements Runnable {
 	final private ReversiPlayer playerOne, playerTwo;
 	private byte currPlayer;
 	private ArrayList<ReversiSpectator> spectators;
+	
+	private volatile boolean quitGame = false;
 
 	public static void main(String[] args) {
-		boolean humanGame = false;
-		boolean aiFirst = DEFAULT_AI_FIRST;
-		long totalTimeLeft = TIME_LIMIT;
-		int boardSize = DEFAULT_BOARD_SIZE;
-		long turnTimeLimit = TURN_TIME_LIMIT;
-		boolean incorrectArguements = false;
-		try {
-			for (int i = 0; i < args.length; i++)
-				switch (args[i]) {
-				case "-l":
-					aiFirst = true;
-					break;
-				case "-n":
-					boardSize = Integer.parseInt(args[++i]);
-					if (boardSize > 26 || boardSize < 4 || boardSize % 2 != 0)
-						incorrectArguements = true;
-					break;
-				case "-t":
-					totalTimeLeft = Integer.parseInt(args[++i]) * 1000;
-					if (totalTimeLeft <= 0)
-						incorrectArguements = true;
-					break;
-				case "-u":
-					turnTimeLimit = Integer.parseInt(args[++i]) * 1000;
-					if (totalTimeLeft <= 0)
-						incorrectArguements = true;
-					break;
-				case "-h":
-					humanGame = true;
-					break;
-				default:
-					incorrectArguements = true;
-					break;
-				}
-		} catch (Exception e) {
-			incorrectArguements = true;
-		} finally {
-			if (incorrectArguements) {
-				System.out
-						.println("Command arguments are [-n <size>] [-l] [-h] [-t <total time limit>] [-u <turn time limit>]");
-				System.exit(-1);
-			}
-		}
-
-		Reversi game;
-
-		if (humanGame) {
-			game = new Reversi(boardSize, new ReversiConsolePlayer(boardSize),
-					new ReversiConsolePlayer(boardSize));
-		} else if (aiFirst) {
-			game = new Reversi(boardSize, new ReversiAI(boardSize,
-					ReversiAI.BRUTALER, totalTimeLeft, turnTimeLimit, true),
-					new ReversiConsolePlayer(boardSize));
-		} else {
-			game = new Reversi(boardSize, new ReversiConsolePlayer(boardSize),
-					new ReversiAI(boardSize, ReversiAI.BRUTALER, totalTimeLeft,
-							turnTimeLimit, false));
-		}
-		game.run();
+		ReversiApplication.main(args);
 	}
 
 	public byte getBoard(int r, int c) {
@@ -102,6 +46,7 @@ public class Reversi implements Runnable {
 		playerTwo = p2;
 		currPlayer = PLAYER_ONE;
 		spectators = new ArrayList<ReversiSpectator>();
+		quitGame = false;
 	}
 
 	public void addSpectator(ReversiSpectator spec) {
@@ -262,7 +207,16 @@ public class Reversi implements Runnable {
 	public static String moveToString(int moveR, int moveC) {
 		return (char) (moveC + 'a') + ("" + (moveR + 1));
 	}
-
+	
+	public void quitGame(){
+		quitGame = true;
+		playerOne.quitGame();
+		playerTwo.quitGame();
+		for(ReversiSpectator spec : spectators){
+			spec.quitGame();
+		}
+	}
+	
 	// plays the game, players cannot be substituted mid-game
 	@Override
 	public void run() {
@@ -290,6 +244,8 @@ public class Reversi implements Runnable {
 					+ " player's turn.");
 			do {
 				players[currPlayer + 1].playMove();
+				if (quitGame)
+					return;
 				if (applyMove(players[currPlayer + 1].getMoveRow(),
 						players[currPlayer + 1].getMoveCol(), currPlayer))
 					break;
@@ -328,7 +284,7 @@ public class Reversi implements Runnable {
 			System.out.flush();
 			for (ReversiSpectator spec : spectators)
 				spec.gameUpdated(moveR, moveC);
-		} while (currPlayer != EMPTY);
+		} while (currPlayer != EMPTY && !quitGame);
 		System.out.println("Game Over!");
 	}
 }

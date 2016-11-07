@@ -87,6 +87,12 @@ public class ReversiPanel extends JPanel implements MouseInputListener,
 			}
 		}
 	}
+	
+	@Override
+	public void quitGame(){
+		waitMove.release();
+		changeState.release();
+	}
 
 	public int getMoveRow() {
 		return moveRow;

@@ -244,15 +244,6 @@ public class ReversiAI implements ReversiPlayer {
 			if (baseBoardWeights[i] != 0)
 				baseBoardWeights[i] = baseBoardWeights[i] + cornerOG
 						- cornerNew;
-
-		for (int i = 0; i < boardSize; i++) {
-			for (int j = 0; j < boardSize; j++) {
-				int pos = (i + 1) * boardDim + (j + 1);
-				System.out.print(baseBoardWeights[pos] + " ");
-			}
-			System.out.println();
-		}
-		System.out.println();
 	}
 
 	private static int choose2(int x) {
@@ -758,5 +749,10 @@ public class ReversiAI implements ReversiPlayer {
 		public int compareTo(SearchTree arg0) {
 			return (parentType) * (arg0.heuristic - heuristic);
 		}
+	}
+
+	@Override
+	public void quitGame() {
+		//do nothing
 	}
 }

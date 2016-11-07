@@ -12,4 +12,7 @@ public interface ReversiPlayer {
 	public int getMoveCol();
 
 	public void enemyPlayMove(int row, int col);
+	
+	//should unblock anything waiting
+	public void quitGame();
 }

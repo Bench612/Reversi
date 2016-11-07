@@ -35,4 +35,9 @@ public class ReversiGUIPlayer extends JPanel implements ReversiPlayer {
 	public void enemyPlayMove(int row, int col) {
 	}
 
+	@Override
+	public void quitGame() {
+		rPanel.quitGame();
+	}
+
 }
