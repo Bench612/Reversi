@@ -602,12 +602,6 @@ public class ReversiAI implements ReversiPlayer {
 				}
 				System.out.println();
 			}
-
-			/*
-			 * for (int i = 0; i < newPerms.size(); i++) {
-			 * System.out.println(Reversi.moveToString(newPerms.get(i) /
-			 * (boardSize + 2) - 1, newPerms.get(i) % (boardSize + 2) - 1)); }
-			 */
 			this.undoCountChanges();
 			System.out.println();
 		}

@@ -12,8 +12,8 @@ public class Reversi implements Runnable {
 	final static byte EMPTY = 0;
 
 	// time in milliseconds
-	static final long TIME_LIMIT = 1000 * 30;
-	static final long TURN_TIME_LIMIT = 3 * 1000;
+	static final long TIME_LIMIT = 1000 * 120;
+	static final long TURN_TIME_LIMIT = 5 * 1000;
 	static final int DEFAULT_BOARD_SIZE = 8;
 	static final boolean DEFAULT_AI_FIRST = false;
 
